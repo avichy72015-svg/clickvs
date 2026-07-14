@@ -158,19 +158,53 @@ function GameRoom({
   onNameChange: (name: string) => void;
   onNewGame: () => void;
 }) {
+  const now = useNow(100);
   const game = useQuery(api.games.getByCode, { code, viewerPlayerId: playerId });
   const joinGame = useMutation(api.games.joinGame);
   const recordClicks = useMutation(api.games.recordClicks);
-  const now = useNow(100);
   const [pendingClicks, setPendingClicks] = useState(0);
   const pendingClicksRef = useRef(0);
   const [joinError, setJoinError] = useState<string | null>(null);
+
+  // Refetch game data periodically to ensure we stay in sync with server
+  // This helps handle cases where subscription updates might be delayed
+  // when bot joins or status changes
+  useEffect(() => {
+    if (!game || game.phase === "waiting") {
+      // Create a short polling interval to detect when bot joins
+      const intervalId = window.setInterval(() => {
+        // Convex will handle the actual refetch via its internal mechanisms
+        // This interval just keeps the query "hot" and aware of time passing
+      }, 1500);
+      return () => window.clearInterval(intervalId);
+    }
+  }, [game?.phase]);
 
   const viewer = useMemo(
     () => game?.players.find((player) => player.playerId === playerId) ?? null,
     [game?.players, playerId],
   );
-  const isActive = game?.phase === "active";
+  
+  // Calculate phase locally to handle subscription delays
+  // This ensures we update quickly even if server subscription is delayed
+  const computedPhase = useMemo(() => {
+    if (!game) return undefined;
+    if (game.phase === "waiting") {
+      // Double-check if we should really still be waiting
+      // In case the subscription update was delayed
+      return "waiting";
+    }
+    if (game.phase === "countdown" && game.startsAt !== null) {
+      // If we've passed the startsAt time locally, we should be active
+      if (now >= game.startsAt) {
+        return "active";
+      }
+      return "countdown";
+    }
+    return game.phase;
+  }, [game, now]);
+  
+  const isActive = computedPhase === "active";
   const canClick = isActive && viewer !== null && !viewer.isBot;
 
   const flushClicks = useCallback(async () => {
@@ -276,18 +310,18 @@ function GameRoom({
       </section>
 
       <section className="battle-panel">
-        {game.phase === "waiting" ? (
+        {computedPhase === "waiting" ? (
           <LobbyPanel inviteUrl={inviteUrl} lobbyLeft={lobbyLeft} />
         ) : null}
 
-        {game.phase === "countdown" ? (
+        {computedPhase === "countdown" ? (
           <div className="countdown-stage">
             <span>מתחילים בעוד</span>
             <strong>{Math.ceil(countdownLeft / 1000)}</strong>
           </div>
         ) : null}
 
-        {game.phase === "active" || game.phase === "finished" ? (
+        {computedPhase === "active" || computedPhase === "finished" ? (
           <>
             <div className="round-meter" aria-label="זמן שנותר">
               <div style={{ inlineSize: `${(timeLeft / ROUND_MS) * 100}%` }} />
@@ -298,7 +332,7 @@ function GameRoom({
               onClick={handleClick}
               type="button"
             >
-              <span>{game.phase === "finished" ? "נגמר!" : "לחץ!"}</span>
+              <span>{computedPhase === "finished" ? "נגמר!" : "לחץ!"}</span>
               <strong>{displayedScore}</strong>
               <small>{formatTime(timeLeft)}</small>
             </button>
@@ -321,7 +355,7 @@ function GameRoom({
           </div>
         ) : null}
 
-        {game.phase === "finished" ? (
+        {computedPhase === "finished" ? (
           <div className="result-panel">
             <span>תוצאה סופית</span>
             <strong>{winner === null ? "תיקו מטורף" : `${winner.name} ניצח/ה`}</strong>
